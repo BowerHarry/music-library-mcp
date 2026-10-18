@@ -93,8 +93,16 @@ const OPS = {
       try { cols[k] = t[p](); } catch (e) { cols[k] = null; missing.push(k); }
     }
     if (cols.dateAdded) cols.dateAdded = cols.dateAdded.map(iso);
-    // Fails as a whole if any track has no file (e.g. cloud-only purchases): then it's skipped.
-    try { cols.location = t.location().map(l => l ? l.toString() : null); } catch (e) { cols.location = null; missing.push("location"); }
+    // Locations come from the library's file tracks only: entries without a local file (cloud-only
+    // purchases, or ghosts left behind when a file was replaced) would make a bulk read fail.
+    try {
+      const ft = lib().fileTracks;
+      const fids = ft.persistentID(), flocs = ft.location();
+      const byId = {};
+      for (let i = 0; i < fids.length; i++) byId[fids[i]] = flocs[i] ? flocs[i].toString() : null;
+      cols.hasFile = cols.id.map(id => Object.prototype.hasOwnProperty.call(byId, id));
+      cols.location = cols.id.map(id => byId[id] || null);
+    } catch (e) { cols.location = null; cols.hasFile = null; missing.push("location: " + e); }
     try { cols.favorited = t.favorited(); } catch (e) {
       try { cols.favorited = t.loved(); } catch (e2) { cols.favorited = null; missing.push("favorited"); }
     }
@@ -191,6 +199,28 @@ const OPS = {
       removed.push(id);
     }
     return { removed: removed, notThere: notThere };
+  },
+
+  // Add files to the library (Music copies/organises them per its own settings).
+  add(req) {
+    return req.paths.map(p => {
+      const r = { path: p };
+      try {
+        if (!exists(p)) throw new Error("file not found");
+        const added = M.add(Path(p));
+        const nt = Array.isArray(added) ? added[0] : added;
+        r.newId = nt.persistentID(); r.name = nt.name(); r.location = location(nt);
+      } catch (e) { r.error = String(e); }
+      return r;
+    });
+  },
+
+  // Undo for add: remove library entries but leave the files exactly where they are.
+  removeEntries(req) {
+    return req.ids.map(id => {
+      try { M.delete(trackById(id)); return { id: id, removed: true }; }
+      catch (e) { return { id: id, error: String(e) }; }
+    });
   },
 
   // Remove from the library (and so from iCloud), then move the file to the Bin.

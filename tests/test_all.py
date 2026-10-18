@@ -26,7 +26,7 @@ def track(i, name, artist, album, **kw):
          "grouping": "", "sortName": "", "sortArtist": "", "sortAlbum": "", "sortAlbumArtist": "",
          "rating": 0, "kind": "Apple Lossless audio file", "cloudStatus": "matched", "bitRate": 1411,
          "sampleRate": 44100, "size": 20_000_000, "duration": 200.0, "playedCount": 0,
-         "dateAdded": "2026-10-18T10:00:00Z", "favorited": False, "location": None}
+         "dateAdded": "2026-10-18T10:00:00Z", "favorited": False, "location": None, "hasFile": True}
     t.update(kw)
     return t
 
@@ -136,6 +136,20 @@ class FakeMusic:
             out.append({"originalPath": it["originalPath"], "newId": t["id"]})
         return out
 
+    def op_add(self, paths):
+        out = []
+        for path in paths:
+            self._n += 1
+            t = track(self._n, Path(path).stem, "Someone", "Added", location=path, hasFile=True)
+            self.tracks[t["id"]] = t
+            out.append({"path": path, "newId": t["id"], "name": t["name"], "location": path})
+        return out
+
+    def op_removeEntries(self, ids):
+        for i in ids:
+            self.tracks.pop(i)
+        return [{"id": i, "removed": True} for i in ids]
+
     def op_rematch(self, ids, backupDir=None):
         out = []
         for i in ids:
@@ -165,7 +179,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.music = FakeMusic(library())
         self.store = Store(TMP / f"{self.id()}.db")
-        self.svc = service.Service(self.store, self.music)
+        self.data = TMP / "d" / self.id()
+        self.svc = service.Service(self.store, self.music, data_dir=self.data)
 
 
 class Reading(Base):
@@ -257,6 +272,61 @@ class Editing(Base):
         self.assertEqual(res["readded"], 1)
         self.assertNotIn("ID0003", self.music.tracks)
         self.assertEqual(self.svc.search_tracks("vampire")["tracks"][0]["id"], res["results"][0]["newId"])
+
+
+class Safety(Base):
+    def test_snapshot_before_first_write_only(self):
+        snaps = self.data / "snapshots"
+        before = 0
+        self.svc.edit_tracks(["ID0001"], {"genre": "Pop"})
+        self.svc.edit_tracks(["ID0002"], {"genre": "Pop"})
+        self.assertEqual(len(list(snaps.glob("*.gz"))), before + 1)  # second edit reuses it
+        import gzip, json
+        latest = max(snaps.glob("*.gz"), key=lambda f: f.stat().st_mtime)
+        data = json.load(gzip.open(latest, "rt"))
+        self.assertEqual(data["count"], 8)
+        self.assertEqual(data["cols"]["genre"][0], "")  # taken before the change
+
+    def test_no_snapshot_no_write(self):
+        service.SNAPSHOT_EVERY = 0  # force a new snapshot
+        try:
+            orig = self.music.op_dump
+            self.svc.lib()  # snapshot of the library loaded first
+            self.music.op_dump = lambda: (_ for _ in ()).throw(RuntimeError("disk full"))
+            with self.assertRaisesRegex(service.UserError, "nothing was changed"):
+                self.svc.edit_tracks(["ID0001"], {"genre": "Pop"})
+            self.assertEqual(self.music.tracks["ID0001"]["genre"], "")
+            self.music.op_dump = orig
+        finally:
+            service.SNAPSHOT_EVERY = 600
+
+
+class Files(Base):
+    def test_ghosts_orphans_and_add(self):
+        media = TMP / f"vol-{self.id()}" / "Media.localized" / "Music" / "Olivia Rodrigo" / "GUTS"
+        media.mkdir(parents=True)
+        for n in ("01 all-american bitch.m4a", "05 ballad.m4a", ".hidden.m4a", "cover.jpg"):
+            (media / n).write_bytes(b"x")
+        self.music.tracks["ID0001"]["location"] = str(media / "01 all-american bitch.m4a")
+        self.music.tracks["ID0002"].update(hasFile=False, location=None)  # a ghost entry
+        issues = self.svc.find_issues()
+        self.assertEqual([t["id"] for t in issues["entries_without_file"]["items"]], ["ID0002"])
+        self.assertEqual(issues["files_not_in_library"]["items"], [str(media / "05 ballad.m4a")])
+        res = self.svc.add_files([str(media / "05 ballad.m4a")])
+        self.assertEqual(res["added"], 1)
+        self.assertEqual(self.svc.find_issues()["files_not_in_library"]["count"], 0)
+        with self.assertRaisesRegex(service.UserError, "already in the library"):
+            self.svc.add_files([str(media / "05 ballad.m4a")])
+        with self.assertRaisesRegex(service.UserError, "not audio"):
+            self.svc.add_files([str(media / "cover.jpg")])
+        self.svc.undo(res["change_id"])
+        self.assertTrue((media / "05 ballad.m4a").exists())  # undo leaves the file alone
+        self.assertEqual(self.svc.find_issues()["files_not_in_library"]["count"], 1)
+
+    def test_deleting_a_ghost_touches_no_file(self):
+        self.music.tracks["ID0002"].update(hasFile=False, location=None)
+        prev = self.svc.delete_tracks(["ID0002"])
+        self.assertIsNone(prev["tracks"][0]["file"])
 
 
 class Playlists(Base):

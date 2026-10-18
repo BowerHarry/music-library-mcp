@@ -17,7 +17,7 @@ the file, the library and iCloud Music Library stay in step.
 | `search_tracks` | `edit_album` | `get_playlist` | `list_changes` |
 | `get_tracks` | `fill_genres` | `create_playlist` | `undo` |
 | `get_album` | `rematch_tracks` | `add_to_playlist` | |
-| `find_issues` | | `remove_from_playlist`, `rename_playlist` | |
+| `find_issues` | `add_files` | `remove_from_playlist`, `rename_playlist` | `snapshot_library` |
 
 - **Bulk edits** (more than 25 tracks) and **genre fills** return a preview and a one-time
   confirmation token; nothing changes until the call is repeated with the token.
@@ -26,7 +26,13 @@ the file, the library and iCloud Music Library stay in step.
 - **Re-adding** (`rematch_tracks`) fixes songs that are "matched" but greyed out on other devices:
   each file is backed up, the library entry removed and the file added again, keeping stars,
   plays, favourite and playlists.
+- **Snapshots**: before changes, every track's details are saved to `data/snapshots/` (gzipped
+  JSON, at most one per 10 minutes, last 50 kept). If the snapshot can't be saved, nothing changes.
+- **Health check** finds library entries without a file ("ghosts" left when a file was replaced),
+  entries whose file has gone, and audio files in the Music folder that aren't in the library.
 - One Apple Event request runs at a time, so a slow Mac isn't flooded.
+- Back up `Music Library.musiclibrary` too before big clean-ups: it holds playlists, plays and
+  ratings, which snapshots record but can't recreate.
 
 ## Requirements
 

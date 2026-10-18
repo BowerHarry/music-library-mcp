@@ -32,6 +32,8 @@ on the Mac that hosts the library and sync to their devices through iCloud.
   (name, artist, album) will go, say the files go to the Bin and the songs leave every device,
   and ask them to confirm. Only after a clear yes in their reply call it again with the token.
   Never delete on an inferred or earlier yes, and never delete more than they named.
+- A snapshot of every song's details is saved before changes; if a tool says it couldn't save
+  one, stop and tell the user rather than retrying around it.
 - Songs greyed out on their devices (matched but won't play) are fixed by rematch_tracks.
 - Albums showing up twice usually disagree on album artist or compilation: get_album shows the
   inconsistencies and a suggested fix to apply with edit_album.
@@ -165,6 +167,20 @@ async def rematch_tracks(track_ids: list[str]) -> Any:
     library so iCloud matches or uploads it again. Keeps the file, stars, plays, favourite and
     playlists. Up to 30 per call; new ids are assigned."""
     return await _run("rematch_tracks", locals(), Service.rematch_tracks, track_ids)
+
+
+@mcp.tool()
+async def add_files(paths: list[str]) -> Any:
+    """Add audio files on the Mac to the library, e.g. ones find_issues lists under
+    files_not_in_library. Up to 100 per call. Returns new track ids and a change_id."""
+    return await _run("add_files", locals(), Service.add_files, paths)
+
+
+@mcp.tool()
+async def snapshot_library() -> Any:
+    """Save a full snapshot of every song's details now. One is also taken automatically before
+    changes (at most every 10 minutes), and changes refuse to run if it fails."""
+    return await _run("snapshot_library", {}, Service.snapshot)
 
 
 # ------------------------------------------------------------------ playlists

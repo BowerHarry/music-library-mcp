@@ -2,8 +2,10 @@
 one at a time through the bridge and are recorded so they can be undone."""
 from __future__ import annotations
 
+import gzip
 import json
 import logging
+import os
 import threading
 import time
 from typing import Any
@@ -18,6 +20,9 @@ log = logging.getLogger("library_mcp")
 
 MAX_DELETE = 100
 MAX_REMATCH = 30
+MAX_ADD = 100
+SNAPSHOT_EVERY = 600   # seconds: at most one automatic snapshot per 10 minutes of edits
+SNAPSHOTS_KEPT = 50
 
 
 class UserError(Exception):
@@ -25,8 +30,9 @@ class UserError(Exception):
 
 
 class Service:
-    def __init__(self, store: Store | None = None, bridge: Bridge | None = None):
-        self.store = store or Store(CONFIG.data_dir / "library.db")
+    def __init__(self, store: Store | None = None, bridge: Bridge | None = None, data_dir=None):
+        self.data_dir = data_dir or CONFIG.data_dir
+        self.store = store or Store(self.data_dir / "library.db")
         self.bridge = bridge or Bridge()
         self._lib: Library | None = None
         self._lib_at = 0.0
@@ -43,6 +49,39 @@ class Service:
     def _dirty(self) -> None:
         with self._lock:
             self._lib = None
+
+    # ------------------------------------------------------------ snapshots
+    @property
+    def snapshot_dir(self):
+        return self.data_dir / "snapshots"
+
+    def snapshot(self, reason: str = "manual") -> dict:
+        """Save every track's details (tags, stars, plays, file path, iCloud status) to a gzipped
+        JSON file, so any metadata change can be traced or put back later."""
+        dump = self.bridge.call("dump")
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        name = time.strftime("%Y-%m-%d_%H%M%S") + f"_{reason}.json.gz"
+        path = self.snapshot_dir / name
+        with gzip.open(path, "wt") as f:
+            json.dump({"taken": time.time(), "reason": reason, **dump}, f)
+        old = sorted(self.snapshot_dir.glob("*.json.gz"))[:-SNAPSHOTS_KEPT]
+        for o in old:
+            o.unlink(missing_ok=True)
+        with self._lock:  # the dump is fresh, so reuse it as the snapshot of the library
+            self._lib, self._lib_at = Library(dump), time.time()
+        return {"snapshot": str(path), "tracks": dump["count"]}
+
+    def _before_write(self, kind: str) -> str:
+        """Take a snapshot unless one was taken in the last few minutes. Refuses to write if the
+        snapshot fails: no snapshot, no change."""
+        latest = max(self.snapshot_dir.glob("*.json.gz"), default=None, key=lambda f: f.stat().st_mtime) \
+            if self.snapshot_dir.exists() else None
+        if latest and time.time() - latest.stat().st_mtime < SNAPSHOT_EVERY:
+            return latest.name
+        try:
+            return os.path.basename(self.snapshot(kind)["snapshot"])
+        except Exception as e:
+            raise UserError(f"couldn't save a snapshot before changing anything, so nothing was changed: {e}")
 
     def _track(self, tid: str) -> dict:
         r = self.lib().by_id.get(tid)
@@ -139,11 +178,12 @@ class Service:
                         f"with confirm_token={token} once they agree (valid 10 minutes)."}
 
     def _apply_edits(self, edits: list[dict], kind: str, summary: str) -> dict:
+        snap = self._before_write(kind)
         results = self.bridge.call("set", timeout=60 + 3 * len(edits), edits=edits)
         self._dirty()
         done = [{"id": r["id"], "before": r["before"]} for r in results if not r.get("error")]
         errors = [{"id": r["id"], "error": r["error"]} for r in results if r.get("error")]
-        cid = self.store.record_change(kind, summary, {"tracks": done}) if done else None
+        cid = self.store.record_change(kind, summary, {"tracks": done, "snapshot": snap}) if done else None
         out = {"changed": len(done), "change_id": cid}
         if errors:
             out["errors"] = errors
@@ -329,6 +369,7 @@ class Service:
         if p is None or p["ids"] != sorted(ids):
             raise UserError("confirmation token is unknown, expired, or for different tracks: preview again "
                             "and ask the user")
+        self._before_write("delete")
         res = self.bridge.call("delete", timeout=60 + 5 * len(ids), ids=ids)
         self._dirty()
         done = [r for r in res if r.get("removedFromLibrary")]
@@ -347,6 +388,7 @@ class Service:
             raise UserError("give at least one track id")
         if len(ids) > MAX_REMATCH:
             raise UserError(f"at most {MAX_REMATCH} tracks per call (each takes a few seconds)")
+        self._before_write("rematch")
         kw = {"backupDir": CONFIG.rematch_backup_dir} if CONFIG.rematch_backup_dir else {}
         res = self.bridge.call("rematch", timeout=60 + 20 * len(ids), ids=ids, **kw)
         self._dirty()
@@ -354,6 +396,28 @@ class Service:
         self.store.record_change("rematch", f"re-added {len(ok)} track(s)", {"results": res})
         return {"readded": len(ok), "results": res,
                 "note": "New ids were assigned. iCloud takes a while (often up to an hour) to match them."}
+
+    # ------------------------------------------------------------ add
+    def add_files(self, paths: list[str]) -> dict:
+        from .index import AUDIO_EXTS
+        paths = list(dict.fromkeys(p.strip() for p in paths or [] if p.strip()))
+        if not paths:
+            raise UserError("give at least one file path")
+        if len(paths) > MAX_ADD:
+            raise UserError(f"at most {MAX_ADD} files per call")
+        bad = [p for p in paths if not os.path.isfile(p) or os.path.splitext(p)[1].lower() not in AUDIO_EXTS]
+        if bad:
+            raise UserError(f"not audio files that exist on this Mac: {bad[:10]}")
+        known = {r.get("location") for r in self.lib(refresh=True).rows}
+        already = [p for p in paths if p in known]
+        if already:
+            raise UserError(f"already in the library: {already[:10]}")
+        self._before_write("add")
+        res = self.bridge.call("add", timeout=60 + 5 * len(paths), paths=paths)
+        self._dirty()
+        ids = [r["newId"] for r in res if r.get("newId")]
+        cid = self.store.record_change("add", f"added {len(ids)} file(s)", {"ids": ids}) if ids else None
+        return {"added": len(ids), "change_id": cid, "results": res}
 
     # ------------------------------------------------------------ history
     def list_changes(self, limit: int = 20) -> list[dict]:
@@ -368,12 +432,18 @@ class Service:
         if row["undone"]:
             raise UserError("that change was already undone")
         kind, p = row["kind"], json.loads(row["payload"])
+        if kind in ("edit", "genres", "delete", "add"):
+            self._before_write("undo")
         if kind in ("edit", "genres"):
             res = self.bridge.call("set", timeout=60 + 3 * len(p["tracks"]),
                                    edits=[{"id": t["id"], "changes": t["before"]} for t in p["tracks"]])
             self._dirty()
             out = {"restored": sum(1 for r in res if not r.get("error")),
                    "errors": [r for r in res if r.get("error")]}
+        elif kind == "add":
+            out = {"results": self.bridge.call("removeEntries", ids=p["ids"]),
+                   "note": "library entries removed; the files were left where they are"}
+            self._dirty()
         elif kind == "playlist_add":
             out = self.bridge.call("removeFromPlaylist", id=p["playlist"], trackIds=p["ids"])
         elif kind == "playlist_remove":

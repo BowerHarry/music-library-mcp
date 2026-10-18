@@ -7,6 +7,8 @@ import unicodedata
 from collections import Counter, defaultdict
 
 LOSSLESS_KINDS = ("lossless", "aiff", "wav", "flac")
+AUDIO_EXTS = {".m4a", ".mp3", ".aac", ".aif", ".aiff", ".wav", ".m4p", ".alac", ".flac"}
+MEDIA_MARK = "/Media.localized/Music/"
 HEALTHY_CLOUD = {"matched", "uploaded", "purchased", "subscription", "downloaded"}
 EDITABLE = ("name", "artist", "album", "albumArtist", "genre", "year", "trackNumber", "trackCount",
             "discNumber", "discCount", "compilation", "composer", "comment", "grouping", "sortName",
@@ -140,6 +142,33 @@ class Library:
                 fix[f] = vals.most_common(1)[0][0]
         return fix
 
+    # ------------------------------------------------------------ files
+    def music_folder(self) -> str | None:
+        """The Music media folder (…/Media.localized/Music), worked out from track locations."""
+        for r in self.rows:
+            loc = r.get("location") or ""
+            i = loc.find(MEDIA_MARK)
+            if i > 0:
+                return loc[:i + len(MEDIA_MARK) - 1]
+        return None
+
+    def files_not_in_library(self, folder: str | None = None) -> list[str]:
+        """Audio files inside the Music media folder that no library entry points at."""
+        folder = folder or self.music_folder()
+        if not folder or not os.path.isdir(folder) or not self.has_locations:
+            return []
+        known = {unicodedata.normalize("NFC", r["location"]) for r in self.rows if r.get("location")}
+        out = []
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.startswith(".") or os.path.splitext(f)[1].lower() not in AUDIO_EXTS:
+                    continue
+                path = os.path.join(root, f)
+                if unicodedata.normalize("NFC", path) not in known:
+                    out.append(path)
+        return sorted(out)
+
     # ------------------------------------------------------------ health check
     def issues(self, limit: int = 20) -> dict:
         albums: dict[tuple, list[dict]] = defaultdict(list)
@@ -191,9 +220,11 @@ class Library:
                         for ts in albums.values() if any(not is_lossless(t) for t in ts)]
         lossy_albums.sort(key=lambda a: -a["lossy"])
 
-        missing_files = []
+        missing_files, no_file, not_in_library = [], [], []
         if self.has_locations:
             missing_files = [compact(r) for r in self.rows if r.get("location") and not os.path.exists(r["location"])]
+            no_file = [compact(r) for r in self.rows if r.get("hasFile") is False]
+            not_in_library = self.files_not_in_library()
 
         def section(items, note=""):
             d = {"count": len(items), "items": items[:limit]}
@@ -212,8 +243,14 @@ class Library:
             "duplicates": section(duplicates),
             "icloud_problems": section(cloud_problems, "statuses other than matched/uploaded/purchased; "
                                                        "rematch_tracks often fixes these"),
-            "missing_files": section(missing_files) if self.has_locations else
-            {"note": "file locations unavailable (library has tracks without local files)"},
+            "missing_files": section(missing_files, "library entries whose file has gone")
+            if self.has_locations else {"note": "file locations unavailable"},
+            "entries_without_file": section(no_file, "entries with no local file on this Mac: cloud-only "
+                                                     "purchases, or ghosts left when a file was replaced. "
+                                                     "Ghosts can be deleted (no file is touched) and the "
+                                                     "real file added with add_files"),
+            "files_not_in_library": section(not_in_library, "audio files in the Music folder that no "
+                                                            "library entry uses; add_files can add them"),
             "lossy_albums": section(lossy_albums, "albums with AAC/MP3 tracks that could be "
                                                   "replaced with lossless copies"),
         }
