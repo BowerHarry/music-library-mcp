@@ -19,10 +19,29 @@ from .store import Store
 log = logging.getLogger("library_mcp")
 
 MAX_DELETE = 100
+# Songs with these iCloud statuses can't be removed through scripting (only their local copy can).
+IN_ICLOUD = {"matched", "uploaded", "purchased", "subscription"}
 MAX_REMATCH = 30
 MAX_ADD = 100
 SNAPSHOT_EVERY = 600   # seconds: at most one automatic snapshot per 10 minutes of edits
 SNAPSHOTS_KEPT = 50
+
+
+def find_in_bin(original: str) -> str | None:
+    """Where macOS put a binned file: the volume's .Trashes/<uid> for external drives, else ~/.Trash.
+    Finder adds a suffix when the name is taken, so take the newest match."""
+    import glob
+    name = os.path.basename(original)
+    stem, ext = os.path.splitext(name)
+    parts = original.split("/")
+    bins = [os.path.join("/Volumes", parts[2], ".Trashes", str(os.getuid()))] \
+        if original.startswith("/Volumes/") and len(parts) > 2 else []
+    bins.append(os.path.expanduser("~/.Trash"))
+    for b in bins:
+        hits = [h for h in glob.glob(os.path.join(glob.escape(b), glob.escape(stem) + "*" + glob.escape(ext)))]
+        if hits:
+            return max(hits, key=os.path.getmtime)
+    return None
 
 
 class UserError(Exception):
@@ -347,21 +366,28 @@ class Service:
             raise UserError(f"at most {MAX_DELETE} tracks per delete")
         if not confirm_token:
             details = self.bridge.call("get", ids=ids)
-            items, total = [], 0
+            items, blocked, total = [], [], 0
             for d in details:
                 if d.get("error"):
                     raise UserError(d["error"])
+                item = {"id": d["id"], "name": d.get("name"), "artist": d.get("artist"),
+                        "album": d.get("album"), "format": short_kind(d), "file": d.get("location"),
+                        "icloud": d.get("cloudStatus"),
+                        "in_playlists": [p["name"] for p in d.get("playlists") or []]}
+                (blocked if d.get("cloudStatus") in IN_ICLOUD else items).append(item)
                 total += d.get("size") or 0
-                items.append({"id": d["id"], "name": d.get("name"), "artist": d.get("artist"),
-                              "album": d.get("album"), "format": short_kind(d), "file": d.get("location"),
-                              "in_playlists": [p["name"] for p in d.get("playlists") or []]})
+            if blocked:
+                return {"error": "these songs are in iCloud Music Library, which Music's scripting can't "
+                                 "delete from: it would only remove the local copy and leave the song on "
+                                 "every device. Delete them in the Music app on the Mac (select, then "
+                                 "Song > Delete from Library). Nothing was changed.",
+                        "in_icloud": blocked, "deletable": [i["id"] for i in items]}
             token = self.store.new_confirmation("delete", {"ids": sorted(ids)})
             return {"needs_confirmation": True, "confirm_token": token, "tracks": items,
                     "total_size_mb": round(total / 1e6, 1),
-                    "what_happens": "Each song is removed from the library (and so from iCloud and every "
-                                    "device) and its file is moved to the Bin on the Mac. undo can bring "
-                                    "the files back while they're still in the Bin, but plays, ratings "
-                                    "and playlist entries are lost.",
+                    "what_happens": "Each song is removed from the library on the Mac and its file is moved "
+                                    "to the Bin. undo can bring the files back while they're still in the "
+                                    "Bin, but plays, ratings and playlist entries are lost.",
                     "note": f"List these to the user and ask them to confirm. Only after a clear yes, call "
                             f"delete_tracks again with the same ids and confirm_token={token} "
                             f"(valid 10 minutes)."}
@@ -370,16 +396,28 @@ class Service:
             raise UserError("confirmation token is unknown, expired, or for different tracks: preview again "
                             "and ask the user")
         self._before_write("delete")
-        res = self.bridge.call("delete", timeout=60 + 5 * len(ids), ids=ids)
+        try:
+            res = self.bridge.call("delete", timeout=60 + 5 * len(ids), ids=ids)
+        except Exception as e:
+            self._dirty()
+            raise UserError(f"the delete stopped part-way ({e}). Check each track with get_tracks before "
+                            f"doing anything else; the snapshot taken just before is in data/snapshots.")
         self._dirty()
+        for r in res:
+            if r.get("fileBinned") and r.get("location"):
+                r["binPath"] = find_in_bin(r["location"])
         done = [r for r in res if r.get("removedFromLibrary")]
         cid = None
         if done:
             cid = self.store.record_change("delete", f"deleted {len(done)} track(s)", {"items": [
                 {"name": r.get("name"), "artist": r.get("artist"), "originalPath": r.get("location"),
                  "binPath": r.get("binPath")} for r in done if r.get("location")]})
-        return {"deleted": len(done), "files_binned": sum(1 for r in res if r.get("fileBinned")),
-                "change_id": cid, "results": res}
+        kept = [r for r in res if r.get("removedFromLibrary") is False]
+        out = {"deleted": len(done), "files_binned": sum(1 for r in res if r.get("fileBinned")),
+               "change_id": cid, "results": res}
+        if kept:
+            out["warning"] = f"{len(kept)} song(s) were kept by iCloud Music Library and put back as they were"
+        return out
 
     # ------------------------------------------------------------ re-add
     def rematch_tracks(self, track_ids: list[str]) -> dict:

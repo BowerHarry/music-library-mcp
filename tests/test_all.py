@@ -323,10 +323,10 @@ class Files(Base):
         self.assertTrue((media / "05 ballad.m4a").exists())  # undo leaves the file alone
         self.assertEqual(self.svc.find_issues()["files_not_in_library"]["count"], 1)
 
-    def test_deleting_a_ghost_touches_no_file(self):
+    def test_icloud_ghost_cannot_be_deleted_by_script(self):
         self.music.tracks["ID0002"].update(hasFile=False, location=None)
-        prev = self.svc.delete_tracks(["ID0002"])
-        self.assertIsNone(prev["tracks"][0]["file"])
+        res = self.svc.delete_tracks(["ID0002"])
+        self.assertIn("in_icloud", res)
 
 
 class Playlists(Base):
@@ -357,6 +357,32 @@ class Playlists(Base):
 
 
 class Deleting(Base):
+    def setUp(self):
+        super().setUp()
+        for i in ("ID0004", "ID0005"):  # local-only songs (not in iCloud) can be deleted
+            self.music.tracks[i]["cloudStatus"] = "duplicate"
+
+    def test_icloud_songs_refused(self):
+        res = self.svc.delete_tracks(["ID0001", "ID0004"])
+        self.assertIn("error", res)
+        self.assertEqual([t["id"] for t in res["in_icloud"]], ["ID0001"])
+        self.assertEqual(res["deletable"], ["ID0004"])
+        self.assertNotIn("confirm_token", res)
+
+    def test_kept_by_icloud_is_reported(self):
+        prev = self.svc.delete_tracks(["ID0004"])
+        self.music.op_delete = lambda ids: [{"id": "ID0004", "removedFromLibrary": False,
+                                             "fileBinned": False, "restoredId": "X"}]
+        res = self.svc.delete_tracks(["ID0004"], confirm_token=prev["confirm_token"])
+        self.assertEqual(res["deleted"], 0)
+        self.assertIn("warning", res)
+
+    def test_crash_part_way_is_reported(self):
+        prev = self.svc.delete_tracks(["ID0004"])
+        self.music.op_delete = lambda ids: (_ for _ in ()).throw(RuntimeError("osascript failed"))
+        with self.assertRaisesRegex(service.UserError, "stopped part-way"):
+            self.svc.delete_tracks(["ID0004"], confirm_token=prev["confirm_token"])
+
     def test_preview_then_confirm(self):
         prev = self.svc.delete_tracks(["ID0004"])
         self.assertTrue(prev["needs_confirmation"])
@@ -437,6 +463,19 @@ class EnvFiles(unittest.TestCase):
 
 
 class Genres(unittest.TestCase):
+    def test_find_in_bin(self):
+        home = TMP / "home"
+        (home / ".Trash").mkdir(parents=True, exist_ok=True)
+        (home / ".Trash" / "03 Centuries 2.mp3").write_bytes(b"x")
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            self.assertEqual(service.find_in_bin("/Users/x/Music/03 Centuries.mp3"),
+                             str(home / ".Trash" / "03 Centuries 2.mp3"))
+            self.assertIsNone(service.find_in_bin("/Users/x/Music/other.mp3"))
+        finally:
+            os.environ["HOME"] = old
+
     def test_mapping(self):
         self.assertEqual(musicbrainz.apple_genre("indie rock"), "Alternative")
         self.assertEqual(musicbrainz.apple_genre("pop"), "Pop")

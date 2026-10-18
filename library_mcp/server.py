@@ -29,8 +29,9 @@ on the Mac that hosts the library and sync to their devices through iCloud.
 - Edits apply straight away and can be undone (undo with the change_id). Edits to more than 25
   songs, and fill_genres, return a preview first: summarise it and apply only once the user agrees.
 - Deleting: ALWAYS call delete_tracks without a token first, show the user exactly which songs
-  (name, artist, album) will go, say the files go to the Bin and the songs leave every device,
-  and ask them to confirm. Only after a clear yes in their reply call it again with the token.
+  (name, artist, album) will go, say the files go to the Bin, and ask them to confirm. Songs in
+  iCloud Music Library (matched/uploaded/purchased) can't be deleted by these tools: the preview
+  says so, and the user has to delete them in the Music app. Only after a clear yes in their reply call it again with the token.
   Never delete on an inferred or earlier yes, and never delete more than they named.
 - A snapshot of every song's details is saved before changes; if a tool says it couldn't save
   one, stop and tell the user rather than retrying around it.
@@ -226,7 +227,8 @@ async def rename_playlist(playlist: str, new_name: str) -> Any:
 async def delete_tracks(track_ids: list[str], confirm_token: str = "") -> Any:
     """Delete songs from the library AND move their files to the Bin. Without confirm_token this
     only previews (nothing changes): show the user the list and ask. Call again with the token only
-    after they clearly say yes. Up to 100 per call."""
+    after they clearly say yes. Up to 100 per call. Songs stored in iCloud Music Library can't be
+    deleted this way (the preview refuses them); the user deletes those in the Music app."""
     return await _run("delete_tracks", locals(), Service.delete_tracks, track_ids, confirm_token)
 
 

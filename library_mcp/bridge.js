@@ -223,21 +223,34 @@ const OPS = {
     });
   },
 
-  // Remove from the library (and so from iCloud), then move the file to the Bin.
+  // Remove from the library, then move the file to the Bin. With iCloud Music Library on, Music's
+  // scripting can only remove the local copy of a song that's in iCloud: the entry stays as a
+  // cloud-only song. So check afterwards, and if the entry survived, add the file straight back
+  // (Music merges it into that entry) and report it instead of binning the file.
   delete(req) {
     return req.ids.map(id => {
       const r = { id: id };
       try {
         const t = trackById(id);
-        r.name = t.name(); r.artist = t.artist(); r.album = t.album();
+        r.name = t.name(); r.artist = t.artist(); r.album = t.album(); r.cloudStatus = t.cloudStatus();
         r.location = location(t);
         M.delete(t);
-        r.removedFromLibrary = true;
+        delay(0.5);
+        const still = lib().tracks.whose({ persistentID: id })().length > 0;
+        r.removedFromLibrary = !still;
+        if (still) {
+          r.fileBinned = false;
+          if (r.location && exists(r.location)) {
+            const added = M.add(Path(r.location));
+            const nt = Array.isArray(added) ? added[0] : added;
+            r.restoredId = nt.persistentID();
+          }
+          r.note = "Music kept this song in iCloud Music Library (scripting can't remove it from iCloud); " +
+                   "the file was put back. Delete it in the Music app instead.";
+          return r;
+        }
         if (r.location && exists(r.location)) {
-          const out = Ref();
-          const ok = FM.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(r.location), out, null);
-          r.fileBinned = !!ok;
-          try { r.binPath = out[0].path.js; } catch (e) { r.binPath = null; }
+          r.fileBinned = !!FM.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(r.location), null, null);
         } else {
           r.fileBinned = false;
           r.note = "no local file";
