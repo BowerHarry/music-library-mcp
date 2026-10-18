@@ -76,6 +76,11 @@ class Config:
     rematch_backup_dir: str = _env("REMATCH_BACKUP_DIR")
     osascript: str = _env("OSASCRIPT", "/usr/bin/osascript")
     bridge_timeout: int = int(_env("BRIDGE_TIMEOUT", "300"))
+    # Pacing and circuit breaker for calls to Music (see bridge.py).
+    bridge_min_gap: float = float(_env("BRIDGE_MIN_GAP", "1.0"))
+    bridge_trip_after: int = int(_env("BRIDGE_TRIP_AFTER", "3"))
+    bridge_pause: float = float(_env("BRIDGE_PAUSE", "300"))
+    warm_up_delay: float = float(_env("WARM_UP_DELAY", "120"))
     index_ttl: int = int(_env("INDEX_TTL", "300"))
     # Edits touching more tracks than this need a preview and confirmation first.
     bulk_threshold: int = int(_env("BULK_THRESHOLD", "25"))

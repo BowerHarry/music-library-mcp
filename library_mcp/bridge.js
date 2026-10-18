@@ -41,6 +41,10 @@ function playlistById(pid) {
 
 function iso(d) { return d ? d.toISOString() : null; }
 
+// Reading a property across an EMPTY element list throws "Can't get object" instead of
+// returning [], so check the count first.
+function idsOf(tracks) { return tracks.length ? tracks.persistentID() : []; }
+
 function getFav(t) {
   try { return t.favorited(); } catch (e) { try { return t.loved(); } catch (e2) { return null; } }
 }
@@ -97,7 +101,7 @@ const OPS = {
     // purchases, or ghosts left behind when a file was replaced) would make a bulk read fail.
     try {
       const ft = lib().fileTracks;
-      const fids = ft.persistentID(), flocs = ft.location();
+      const fids = ft.length ? ft.persistentID() : [], flocs = ft.length ? ft.location() : [];
       const byId = {};
       for (let i = 0; i < fids.length; i++) byId[fids[i]] = flocs[i] ? flocs[i].toString() : null;
       cols.hasFile = cols.id.map(id => Object.prototype.hasOwnProperty.call(byId, id));
@@ -134,6 +138,7 @@ const OPS = {
 
   playlists() {
     const P = M.userPlaylists;
+    if (!P.length) return [];
     const ids = P.persistentID(), names = P.name(), smart = P.smart(), kinds = P.specialKind();
     let classes = []; try { classes = P.class(); } catch (e) {}
     const out = [];
@@ -149,7 +154,7 @@ const OPS = {
 
   playlistTracks(req) {
     const p = playlistById(req.id);
-    return { id: req.id, name: p.name(), smart: p.smart(), trackIds: p.tracks.persistentID() };
+    return { id: req.id, name: p.name(), smart: p.smart(), trackIds: idsOf(p.tracks) };
   },
 
   createPlaylist(req) {
@@ -177,7 +182,7 @@ const OPS = {
   addToPlaylist(req) {
     const p = playlistById(req.id);
     if (p.smart()) throw new Error("smart playlists can't be edited");
-    const have = new Set(p.tracks.persistentID());
+    const have = new Set(idsOf(p.tracks));
     const added = [], skipped = [], errors = [];
     for (const id of req.trackIds) {
       if (have.has(id)) { skipped.push(id); continue; }

@@ -429,9 +429,47 @@ class BridgeProcess(unittest.TestCase):
         b = bridge_mod.Bridge(self._fake_osascript("echo 'execution error: Not authorized (-1743)' >&2; exit 1"))
         with self.assertRaisesRegex(bridge_mod.BridgeError, "Automation"):
             b.call("ping")
-        b = bridge_mod.Bridge(self._fake_osascript("sleep 5"), timeout=1)
+        b = bridge_mod.Bridge(self._fake_osascript("sleep 5"), timeout=1, min_gap=0)
         with self.assertRaisesRegex(bridge_mod.BridgeError, "dialog"):
             b.call("ping")
+
+    def test_circuit_breaker(self):
+        counter = TMP / "calls.txt"
+        counter.write_text("")
+        b = bridge_mod.Bridge(self._fake_osascript(
+            f"echo x >> {counter}; echo '{{\"ok\": false, \"error\": \"Cannot get object.\"}}'"),
+            min_gap=0, trip_after=3, pause=60)
+        for _ in range(3):
+            with self.assertRaisesRegex(bridge_mod.BridgeError, "get object"):
+                b.call("addToPlaylist")
+        with self.assertRaisesRegex(bridge_mod.BridgeError, "Paused"):
+            b.call("ping")
+        self.assertEqual(len(counter.read_text().split()), 3)  # the 4th never reached Music
+
+    def test_success_resets_failures(self):
+        flag = TMP / "fail.flag"
+        b = bridge_mod.Bridge(self._fake_osascript(
+            f"if [ -e {flag} ]; then echo '{{\"ok\": false, \"error\": \"boom\"}}'; "
+            f"else echo '{{\"ok\": true, \"result\": 1}}'; fi"), min_gap=0, trip_after=3, pause=60)
+        flag.write_text("")
+        for _ in range(2):
+            with self.assertRaises(bridge_mod.BridgeError):
+                b.call("x")
+        flag.unlink()
+        self.assertEqual(b.call("x"), 1)
+        flag.write_text("")
+        for _ in range(2):  # counting starts again after a success
+            with self.assertRaisesRegex(bridge_mod.BridgeError, "boom"):
+                b.call("x")
+        flag.unlink()
+
+    def test_gap_between_calls(self):
+        import time as _t
+        b = bridge_mod.Bridge(self._fake_osascript("echo '{\"ok\": true, \"result\": 1}'"), min_gap=0.3)
+        b.call("a")
+        t0 = _t.monotonic()
+        b.call("b")
+        self.assertGreaterEqual(_t.monotonic() - t0, 0.3)
 
     def test_request_file_passed(self):
         b = bridge_mod.Bridge(self._fake_osascript(

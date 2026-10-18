@@ -39,6 +39,10 @@ on the Mac that hosts the library and sync to their devices through iCloud.
 - Albums showing up twice usually disagree on album artist or compilation: get_album shows the
   inconsistencies and a suggested fix to apply with edit_album.
 - Prefer Apple's genre names (Pop, Hip-Hop/Rap, Alternative, R&B/Soul, Dance, Electronic...).
+- If a tool returns an error, do NOT retry it or work around it with other tools (creating
+  another playlist, re-adding, smaller batches...). Stop and tell the user what failed. The Mac
+  hosting the library is old and repeated failing requests can make it unstable; after repeated
+  failures the server pauses itself and says so.
 - Keep replies short. Report what changed in one line, with the change_id if they may want to undo.
 """ + (f"\nThe user's name is {CONFIG.owner_name}.\n" if CONFIG.owner_name else "")
 
@@ -251,10 +255,13 @@ async def healthz(_: Request) -> JSONResponse:
 
 
 def _warm_up() -> None:
-    """Talk to Music once at startup, so macOS asks for Automation permission straight away
-    (while someone is at the Mac) rather than on Claude's first request."""
+    """Talk to Music once after startup, so macOS asks for Automation permission while someone is
+    at the Mac rather than on Claude's first request. Waits first (after a reboot Music may still be
+    opening or repairing its library) and only pings: no full library read."""
+    import time
+    time.sleep(CONFIG.warm_up_delay)
     try:
-        log.info("Music reachable: %s", service().status())
+        log.info("Music reachable: %s", service().bridge.call("ping", timeout=60))
     except Exception as e:
         log.warning("Music not reachable yet: %s", e)
 
