@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "Read and edit an Apple Music library from Claude: tags, genres, playlists, deletes, iCloud re-matching."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
-dependencies = ["mcp==2.2.0"]
+requires-python = ">=3.11,<3.14"
+dependencies = ["mcp==2.2.0", "cryptography<49"]  # 49+ has no Intel Mac wheels
 
 [tool.uv]
 package = false
+no-build = true
