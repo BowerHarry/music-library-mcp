@@ -481,6 +481,8 @@ class Genres(unittest.TestCase):
         self.assertEqual(musicbrainz.apple_genre("pop"), "Pop")
         self.assertEqual(norm("Bad Idea Right?"), "bad idea right")
         self.assertNotEqual(norm("+"), norm("÷"))
+        self.assertEqual(norm("Who\u2019d Have Known"), norm("Who'd Have Known"))
+        self.assertEqual(norm("all\u2010american bitch"), norm("all-american bitch"))
 
     def test_symbol_albums_stay_apart(self):
         rows = [track(i, f"S{i}", "Ed Sheeran", alb) for i, alb in enumerate(["+", "+", "÷", "×"])]

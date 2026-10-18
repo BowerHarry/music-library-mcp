@@ -19,11 +19,18 @@ BOOL_FIELDS = {"compilation", "favorited"}
 ALBUM_FIELDS = ("albumArtist", "year", "genre", "compilation", "discCount")
 
 
+# Curly quotes would otherwise vanish (non-ASCII) while straight ones become spaces, so "Who’d"
+# and "Who'd" wouldn't match.
+_SMART_PUNCT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                              "\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-"})
+
+
 def norm(s) -> str:
     """Lowercase, accents and punctuation dropped: "Bad Idea Right?" -> "bad idea right". Names that
     are nothing but symbols (Ed Sheeran's "+", "÷", "×") keep their symbols, or they'd all match."""
     raw = str(s or "")
-    s = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode().lower()
+    s = raw.translate(_SMART_PUNCT)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
     out = re.sub(r"[^a-z0-9]+", " ", s).strip()
     return out or unicodedata.normalize("NFC", raw).strip().lower()
 
