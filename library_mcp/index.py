@@ -20,8 +20,12 @@ ALBUM_FIELDS = ("albumArtist", "year", "genre", "compilation", "discCount")
 
 
 def norm(s) -> str:
-    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()
-    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+    """Lowercase, accents and punctuation dropped: "Bad Idea Right?" -> "bad idea right". Names that
+    are nothing but symbols (Ed Sheeran's "+", "÷", "×") keep their symbols, or they'd all match."""
+    raw = str(s or "")
+    s = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode().lower()
+    out = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return out or unicodedata.normalize("NFC", raw).strip().lower()
 
 
 def fmt_duration(sec) -> str:

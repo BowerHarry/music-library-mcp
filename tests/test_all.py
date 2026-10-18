@@ -480,6 +480,13 @@ class Genres(unittest.TestCase):
         self.assertEqual(musicbrainz.apple_genre("indie rock"), "Alternative")
         self.assertEqual(musicbrainz.apple_genre("pop"), "Pop")
         self.assertEqual(norm("Bad Idea Right?"), "bad idea right")
+        self.assertNotEqual(norm("+"), norm("÷"))
+
+    def test_symbol_albums_stay_apart(self):
+        rows = [track(i, f"S{i}", "Ed Sheeran", alb) for i, alb in enumerate(["+", "+", "÷", "×"])]
+        lib = Library({"count": 4, "cols": {k: [r[k] for r in rows] for k in rows[0]}})
+        self.assertEqual(len(lib.album_tracks("+")), 2)
+        self.assertEqual(len(lib.album_tracks("÷", "Ed Sheeran")), 1)
 
 
 class Tools(unittest.TestCase):
