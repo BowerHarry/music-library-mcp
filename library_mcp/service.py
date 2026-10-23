@@ -207,6 +207,8 @@ class Service:
         done = [{"id": r["id"], "before": r["before"]} for r in results if not r.get("error")]
         errors = [{"id": r["id"], "error": r["error"]} for r in results if r.get("error")]
         cid = self.store.record_change(kind, summary, {"tracks": done, "snapshot": snap}) if done else None
+        if done:
+            self._playlists_changed()  # smart playlists can depend on the edited fields
         out = {"changed": len(done), "change_id": cid}
         if errors:
             out["errors"] = errors
@@ -292,7 +294,8 @@ class Service:
 
     # ------------------------------------------------------------ playlists
     def _playlists_changed(self) -> None:
-        """Export the playlists shortly (see playlist_export.py), if that's turned on."""
+        """Export the playlists shortly (see playlist_export.py), if that's turned on. Called after
+        anything that can change a playlist, smart ones included."""
         if self.exporter:
             self.exporter.schedule()
 
@@ -446,6 +449,8 @@ class Service:
         self._dirty()
         ok = [r for r in res if r.get("ok")]
         self.store.record_change("rematch", f"re-added {len(ok)} track(s)", {"results": res})
+        if ok:
+            self._playlists_changed()  # re-added songs get a new date added
         return {"readded": len(ok), "results": res,
                 "note": "New ids were assigned. iCloud takes a while (often up to an hour) to match them."}
 
@@ -469,6 +474,8 @@ class Service:
         self._dirty()
         ids = [r["newId"] for r in res if r.get("newId")]
         cid = self.store.record_change("add", f"added {len(ids)} file(s)", {"ids": ids}) if ids else None
+        if ids:
+            self._playlists_changed()  # new songs can join smart playlists
         return {"added": len(ids), "change_id": cid, "results": res}
 
     # ------------------------------------------------------------ history
@@ -511,6 +518,5 @@ class Service:
         else:
             raise UserError(f"{kind} changes can't be undone")
         self.store.x("UPDATE changes SET undone=1 WHERE id=?", (change_id,))
-        if kind.startswith("playlist_"):
-            self._playlists_changed()
+        self._playlists_changed()
         return {"undone": row["summary"], **out}
