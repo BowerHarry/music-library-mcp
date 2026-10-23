@@ -266,9 +266,22 @@ def _warm_up() -> None:
         log.warning("Music not reachable yet: %s", e)
 
 
+def _export_playlists_regularly() -> None:
+    """Keeps the playlist export current, including edits made in Music itself. Starts
+    after the warm-up ping, so macOS's permission prompt comes from that one."""
+    import time
+    time.sleep(CONFIG.warm_up_delay + 30)
+    exporter = service().exporter
+    while exporter:
+        exporter.export_quietly()
+        time.sleep(CONFIG.playlist_export_every)
+
+
 def main() -> None:
     import threading
     threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
+    if CONFIG.playlist_export:
+        threading.Thread(target=_export_playlists_regularly, name="playlist-export", daemon=True).start()
     if "--stdio" in sys.argv:
         mcp.run("stdio")
         return

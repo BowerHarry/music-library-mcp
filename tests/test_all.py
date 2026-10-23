@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -14,7 +16,7 @@ os.environ["DATA_DIR"] = str(TMP / "data")
 os.environ["LIBRARY_MCP_NO_ENV_FILES"] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from library_mcp import bridge as bridge_mod, musicbrainz, service  # noqa: E402
+from library_mcp import bridge as bridge_mod, musicbrainz, playlist_export, service  # noqa: E402
 from library_mcp.index import Library, norm  # noqa: E402
 from library_mcp.store import Store  # noqa: E402
 
@@ -112,6 +114,13 @@ class FakeMusic:
         removed = [t for t in trackIds if t in p["ids"]]
         p["ids"] = [t for t in p["ids"] if t not in removed]
         return {"removed": removed, "notThere": [t for t in trackIds if t not in removed]}
+
+    def op_exportPlaylists(self):
+        def loc(i):
+            return self.tracks[i]["location"] if i in self.tracks else None
+        return {"playlists": [{"id": k, "name": v["name"], "tracks": [{"id": i, "location": loc(i)} for i in v["ids"]]}
+                              for k, v in self.playlists.items() if not v["smart"]],
+                "sampleLocations": [t["location"] for t in self.tracks.values() if t["location"]][:5]}
 
     def op_delete(self, ids):
         out = []
@@ -354,6 +363,105 @@ class Playlists(Base):
         self.assertEqual(self.svc.get_playlist("gym 2026")["tracks"][0]["name"], "all-american bitch")
         self.svc.undo(res["change_id"])
         self.assertEqual(self.music.playlists["PL1"]["name"], "Gym")
+
+
+class Exporting(Base):
+    """Playlist export."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = TMP / "media" / self.id() / "Media.localized" / "Music"
+        for t in self.music.tracks.values():
+            t["location"] = f"{self.root}/{t['artist']}/{t['album']}/{t['trackNumber']:02d} {t['name']}.m4a"
+        self.music.tracks["ID0005"]["location"] = None  # cloud-only
+        self.music.tracks["ID0006"]["location"] = "/Volumes/Elsewhere/Hits/Like a Rolling Stone.m4a"
+        self.music.playlists["PL1"]["ids"] = ["ID0004", "ID0005", "ID0006", "ID0001", "ID0004"]
+        self.exporter = playlist_export.PlaylistExporter(self.music, "auto", delay=0.05)
+        self.file = self.root / ".playlists.json"
+
+    def test_auto_writes_relative_paths(self):
+        res = self.exporter.export()
+        self.assertEqual(res["file"], str(self.file))
+        self.assertTrue(res["written"])
+        self.assertEqual(res["songs_without_a_file"], 1)
+        doc = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(doc["schemaVersion"], 1)
+        self.assertEqual(doc["musicFolder"], str(self.root))
+        self.assertEqual(doc["playlists"], [{"id": "PL1", "name": "Gym", "tracks": [
+            "Pink Floyd/The Dark Side of the Moon/06 Money.m4a",
+            "/Volumes/Elsewhere/Hits/Like a Rolling Stone.m4a",
+            "Olivia Rodrigo/GUTS/01 all-american bitch.m4a"]}])
+        self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o644)
+        self.assertEqual(list(self.file.parent.glob(".playlists-*")), [])
+
+    def test_unchanged_not_rewritten(self):
+        self.exporter.export()
+        before = self.file.stat().st_mtime_ns
+        time.sleep(0.01)
+        self.assertFalse(self.exporter.export()["written"])
+        self.assertEqual(self.file.stat().st_mtime_ns, before)
+        self.svc.rename_playlist("gym", "Gym 2026")
+        self.assertTrue(self.exporter.export()["written"])
+        self.assertEqual(json.loads(self.file.read_text(encoding="utf-8"))["playlists"][0]["name"], "Gym 2026")
+
+    def test_explicit_path(self):
+        target = TMP / "out" / self.id() / "playlists.json"
+        res = playlist_export.PlaylistExporter(self.music, str(target)).export()
+        self.assertEqual(res["file"], str(target))
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(doc["musicFolder"], str(self.root))
+        self.assertIn("Olivia Rodrigo/GUTS/01 all-american bitch.m4a", doc["playlists"][0]["tracks"])
+
+    def test_explicit_path_without_music_folder_lists_full_paths(self):
+        for t in self.music.tracks.values():
+            t["location"] = f"/Users/x/Downloads/{t['id']}.m4a"
+        target = TMP / "out" / self.id() / "playlists.json"
+        playlist_export.PlaylistExporter(self.music, str(target)).export()
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        self.assertIsNone(doc["musicFolder"])
+        self.assertEqual(doc["playlists"][0]["tracks"][0], "/Users/x/Downloads/ID0004.m4a")
+
+    def test_music_folder(self):
+        self.assertEqual(playlist_export.music_folder([
+            "/Volumes/Media/Music/Media.localized/Music/A/B/1.m4a",
+            "/Volumes/Media/Music/Media.localized/Music/A/B/2.m4a",
+            "/Users/x/Music/iTunes/iTunes Media/Music/C/D/3.mp3", None]),
+            "/Volumes/Media/Music/Media.localized/Music")
+        self.assertIsNone(playlist_export.music_folder(["/Users/x/Downloads/song.m4a"]))
+
+    def test_unknown_folder_fails_quietly(self):
+        for t in self.music.tracks.values():
+            t["location"] = f"/Users/x/Downloads/{t['id']}.m4a"
+        with self.assertRaises(RuntimeError):
+            self.exporter.export()
+        with self.assertLogs("library_mcp", "WARNING"):
+            self.exporter.export_quietly()
+        self.assertFalse(self.file.exists())
+
+    def test_burst_of_changes_is_one_export(self):
+        for _ in range(3):
+            self.exporter.schedule()
+        time.sleep(0.4)
+        self.assertEqual(self.music.calls.count("exportPlaylists"), 1)
+        self.assertTrue(self.file.exists())
+
+    def test_playlist_changes_schedule_an_export(self):
+        class Schedules:
+            n = 0
+
+            def schedule(self):
+                self.n += 1
+
+        counter = Schedules()
+        svc = service.Service(self.store, self.music, data_dir=self.data, exporter=counter)
+        res = svc.add_to_playlist("gym", ["ID0002"])
+        svc.add_to_playlist("gym", ["ID0002"])  # already there: nothing changed
+        svc.undo(res["change_id"])
+        svc.remove_from_playlist("gym", ["ID0001"])
+        svc.rename_playlist("gym", "Gym 2026")
+        svc.create_playlist("Road Trip")
+        svc.edit_tracks(["ID0002"], {"genre": "Pop"})  # not a playlist change
+        self.assertEqual(counter.n, 5)
 
 
 class Deleting(Base):

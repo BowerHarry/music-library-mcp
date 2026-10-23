@@ -5,12 +5,14 @@
     python -m library_mcp.cli album GUTS "Olivia Rodrigo"
     python -m library_mcp.cli issues
     python -m library_mcp.cli playlists
+    python -m library_mcp.cli export-playlists   # writes the playlist export now; Music isn't changed
 """
 from __future__ import annotations
 
 import json
 import sys
 
+from .playlist_export import PlaylistExporter
 from .service import Service
 
 
@@ -30,6 +32,8 @@ def main(argv: list[str]) -> int:
         out = s.find_issues(limit=5)
     elif cmd == "playlists":
         out = s.list_playlists()
+    elif cmd == "export-playlists":
+        out = (s.exporter or PlaylistExporter(s.bridge, "auto")).export()
     elif cmd == "track":
         out = s.get_tracks(args)
     else:
