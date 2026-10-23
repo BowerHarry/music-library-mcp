@@ -118,8 +118,9 @@ class FakeMusic:
     def op_exportPlaylists(self):
         def loc(i):
             return self.tracks[i]["location"] if i in self.tracks else None
-        return {"playlists": [{"id": k, "name": v["name"], "tracks": [{"id": i, "location": loc(i)} for i in v["ids"]]}
-                              for k, v in self.playlists.items() if not v["smart"]],
+        return {"playlists": [{"id": k, "name": v["name"], "smart": v["smart"],
+                               "tracks": [{"id": i, "location": loc(i)} for i in v["ids"]]}
+                              for k, v in self.playlists.items()],
                 "sampleLocations": [t["location"] for t in self.tracks.values() if t["location"]][:5]}
 
     def op_delete(self, ids):
@@ -376,6 +377,7 @@ class Exporting(Base):
         self.music.tracks["ID0005"]["location"] = None  # cloud-only
         self.music.tracks["ID0006"]["location"] = "/Volumes/Elsewhere/Hits/Like a Rolling Stone.m4a"
         self.music.playlists["PL1"]["ids"] = ["ID0004", "ID0005", "ID0006", "ID0001", "ID0004"]
+        self.music.playlists["PL2"]["ids"] = ["ID0003"]  # the smart "Recently Added"
         self.exporter = playlist_export.PlaylistExporter(self.music, "auto", delay=0.05)
         self.file = self.root / ".playlists.json"
 
@@ -387,10 +389,12 @@ class Exporting(Base):
         doc = json.loads(self.file.read_text(encoding="utf-8"))
         self.assertEqual(doc["schemaVersion"], 1)
         self.assertEqual(doc["musicFolder"], str(self.root))
-        self.assertEqual(doc["playlists"], [{"id": "PL1", "name": "Gym", "tracks": [
-            "Pink Floyd/The Dark Side of the Moon/06 Money.m4a",
-            "/Volumes/Elsewhere/Hits/Like a Rolling Stone.m4a",
-            "Olivia Rodrigo/GUTS/01 all-american bitch.m4a"]}])
+        self.assertEqual(doc["playlists"], [
+            {"id": "PL1", "name": "Gym", "smart": False, "tracks": [
+                "Pink Floyd/The Dark Side of the Moon/06 Money.m4a",
+                "/Volumes/Elsewhere/Hits/Like a Rolling Stone.m4a",
+                "Olivia Rodrigo/GUTS/01 all-american bitch.m4a"]},
+            {"id": "PL2", "name": "Recently Added", "smart": True, "tracks": ["Olivia Rodrigo/GUTS/03 vampire.m4a"]}])
         self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o644)
         self.assertEqual(list(self.file.parent.glob(".playlists-*")), [])
 
@@ -445,7 +449,7 @@ class Exporting(Base):
         self.assertEqual(self.music.calls.count("exportPlaylists"), 1)
         self.assertTrue(self.file.exists())
 
-    def test_playlist_changes_schedule_an_export(self):
+    def test_changes_schedule_an_export(self):
         class Schedules:
             n = 0
 
@@ -460,8 +464,14 @@ class Exporting(Base):
         svc.remove_from_playlist("gym", ["ID0001"])
         svc.rename_playlist("gym", "Gym 2026")
         svc.create_playlist("Road Trip")
-        svc.edit_tracks(["ID0002"], {"genre": "Pop"})  # not a playlist change
         self.assertEqual(counter.n, 5)
+        res = svc.edit_tracks(["ID0002"], {"genre": "Pop"})  # smart playlists can follow genre
+        self.assertEqual(counter.n, 6)
+        svc.undo(res["change_id"])
+        svc.rematch_tracks(["ID0002"])  # new date added
+        self.assertEqual(counter.n, 8)
+        svc.search_tracks("rodrigo")  # reads don't export
+        self.assertEqual(counter.n, 8)
 
 
 class Deleting(Base):

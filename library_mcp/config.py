@@ -85,8 +85,8 @@ class Config:
     # Edits touching more tracks than this need a preview and confirmation first.
     bulk_threshold: int = int(_env("BULK_THRESHOLD", "25"))
     # Playlist export (see playlist_export.py): "auto" writes <music folder>/.playlists.json, a path
-    # writes there instead; empty turns it off. Written shortly after playlist changes and every
-    # PLAYLIST_EXPORT_EVERY seconds (catches edits made in Music itself).
+    # writes there instead; empty turns it off. Written shortly after changes that can affect a
+    # playlist and every PLAYLIST_EXPORT_EVERY seconds (catches changes made in Music itself).
     playlist_export: str = _env("PLAYLIST_EXPORT")
     playlist_export_every: int = int(_env("PLAYLIST_EXPORT_EVERY", "1800"))
 

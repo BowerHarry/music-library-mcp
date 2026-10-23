@@ -3,11 +3,12 @@
 them. Playlists are still only edited in Music.
 
     {"schemaVersion": 1, "exportedAt": "...", "musicFolder": "/…/Media.localized/Music",
-     "playlists": [{"id": "<Music persistent id>", "name": "Road Trip",
+     "playlists": [{"id": "<Music persistent id>", "name": "Road Trip", "smart": false,
                     "tracks": ["Adele/19/01 Daydreamer.m4a"]}]}
 
 Tracks are paths relative to the music folder, in playlist order; a file outside it is listed by its
-full path. Songs without a local file (cloud-only), smart playlists and folders are left out.
+full path. Smart playlists are listed with the songs they hold right now. Songs without a local file
+(cloud-only) and folders are left out.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ SCHEMA_VERSION = 1
 FILE_NAME = ".playlists.json"
 # Where Music (or iTunes) keeps the songs inside its media folder.
 MUSIC_DIRS = ("/Media.localized/Music/", "/iTunes Media/Music/")
-DELAY = 20  # seconds after the last playlist change before exporting, so a burst is one export
+DELAY = 20  # seconds after the last change before exporting, so a burst is one export
 
 
 def music_folder(locations) -> str | None:
@@ -48,7 +49,8 @@ def build(result: dict, root: str | None) -> dict:
     for p in result["playlists"]:
         tracks = [loc[len(prefix):] if prefix and loc.startswith(prefix) else loc
                   for loc in (t.get("location") for t in p["tracks"]) if loc]
-        playlists.append({"id": p["id"], "name": p["name"], "tracks": list(dict.fromkeys(tracks))})
+        playlists.append({"id": p["id"], "name": p["name"], "smart": bool(p.get("smart")),
+                          "tracks": list(dict.fromkeys(tracks))})
     return {"schemaVersion": SCHEMA_VERSION, "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "source": "music-library-mcp", "musicFolder": root, "playlists": playlists}
 

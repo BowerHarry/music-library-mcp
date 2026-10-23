@@ -42,16 +42,17 @@ that read the same music folder, for example over a network share, can use them:
 
 ```json
 {"schemaVersion": 1, "exportedAt": "2026-10-23T09:00:00Z", "musicFolder": "/…/Media.localized/Music",
- "playlists": [{"id": "8F2C1A0B3D4E5F60", "name": "Road Trip",
+ "playlists": [{"id": "8F2C1A0B3D4E5F60", "name": "Road Trip", "smart": false,
                 "tracks": ["Adele/19/01 Daydreamer.m4a", "Adele/19/02 Best for Last.m4a"]}]}
 ```
 
 `id` is the playlist's persistent id in Music. Tracks are paths relative to the music folder, in
-playlist order (a file outside it is listed by its full path). Smart playlists, folders and songs
-without a local file are left out. The file is written about 20 seconds after a playlist change
-made through these tools (a burst of changes is one write) and every 30 minutes
-(`PLAYLIST_EXPORT_EVERY`) to catch edits made in Music itself, and only rewritten when something
-changed. Set `PLAYLIST_EXPORT` to a full path to write it somewhere else, and run
+playlist order (a file outside it is listed by its full path). Smart playlists are included with the
+songs they hold at the time (`"smart": true`); folders and songs without a local file are left out.
+The file is written about 20 seconds after a change made through these tools that can affect a
+playlist (playlist edits, but also song edits, additions and deletes, which smart playlists may
+follow; a burst of changes is one write) and every 30 minutes (`PLAYLIST_EXPORT_EVERY`) to catch
+changes made in Music itself, such as plays. It's only rewritten when something changed. Set `PLAYLIST_EXPORT` to a full path to write it somewhere else, and run
 `uv run python -m library_mcp.cli export-playlists` to write it now.
 
 ## Requirements
