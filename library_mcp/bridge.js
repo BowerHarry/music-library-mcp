@@ -152,6 +152,40 @@ const OPS = {
     return out;
   },
 
+  // For the playlist export: every plain user playlist (not smart, not a folder) with its tracks
+  // in order and each one's file, plus a few library file paths to find the music folder from.
+  exportPlaylists() {
+    const out = { playlists: [], sampleLocations: [] };
+    const lt = lib().fileTracks;
+    for (let i = 0; i < Math.min(lt.length, 5); i++) {
+      const l = location(lt[i]);
+      if (l) out.sampleLocations.push(l);
+    }
+    const P = M.userPlaylists;
+    if (!P.length) return out;
+    const ids = P.persistentID(), names = P.name(), smart = P.smart(), kinds = P.specialKind();
+    let classes = []; try { classes = P.class(); } catch (e) {}
+    for (let i = 0; i < ids.length; i++) {
+      if (kinds[i] !== "none" || smart[i] || classes[i] === "folderPlaylist") continue;
+      const p = P[i];
+      const order = idsOf(p.tracks);
+      const files = {};
+      try {
+        const ft = p.fileTracks;
+        if (ft.length) {
+          const fids = ft.persistentID(), flocs = ft.location();
+          for (let j = 0; j < fids.length; j++) files[fids[j]] = flocs[j] ? flocs[j].toString() : null;
+        }
+      } catch (e) {
+        // A bulk read fails on some entries (e.g. ghosts): read them one at a time instead.
+        for (let j = 0; j < order.length; j++) files[order[j]] = location(p.tracks[j]);
+      }
+      out.playlists.push({ id: ids[i], name: names[i],
+                           tracks: order.map(id => ({ id: id, location: files[id] || null })) });
+    }
+    return out;
+  },
+
   playlistTracks(req) {
     const p = playlistById(req.id);
     return { id: req.id, name: p.name(), smart: p.smart(), trackIds: idsOf(p.tracks) };

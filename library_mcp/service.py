@@ -13,6 +13,7 @@ from typing import Any
 from . import musicbrainz
 from .bridge import Bridge
 from .config import CONFIG
+from .playlist_export import PlaylistExporter
 from .index import BOOL_FIELDS, EDITABLE, INT_FIELDS, Library, compact, norm, short_kind
 from .store import Store
 
@@ -49,10 +50,13 @@ class UserError(Exception):
 
 
 class Service:
-    def __init__(self, store: Store | None = None, bridge: Bridge | None = None, data_dir=None):
+    def __init__(self, store: Store | None = None, bridge: Bridge | None = None, data_dir=None,
+                 exporter: PlaylistExporter | None = None):
         self.data_dir = data_dir or CONFIG.data_dir
         self.store = store or Store(self.data_dir / "library.db")
         self.bridge = bridge or Bridge()
+        self.exporter = exporter or (PlaylistExporter(self.bridge, CONFIG.playlist_export)
+                                     if CONFIG.playlist_export else None)
         self._lib: Library | None = None
         self._lib_at = 0.0
         self._lock = threading.RLock()
@@ -287,6 +291,11 @@ class Service:
         return out
 
     # ------------------------------------------------------------ playlists
+    def _playlists_changed(self) -> None:
+        """Export the playlists shortly (see playlist_export.py), if that's turned on."""
+        if self.exporter:
+            self.exporter.schedule()
+
     def list_playlists(self) -> list[dict]:
         return self.bridge.call("playlists", timeout=120)
 
@@ -317,6 +326,7 @@ class Service:
             raise UserError("give the playlist a name")
         res = self.bridge.call("createPlaylist", name=name)
         cid = self.store.record_change("playlist_create", f"created playlist {name}", res)
+        self._playlists_changed()
         return {**res, "change_id": cid}
 
     def add_to_playlist(self, playlist: str, track_ids: list[str], create: bool = False) -> dict:
@@ -336,6 +346,7 @@ class Service:
         if res["added"]:
             cid = self.store.record_change("playlist_add", f"added {len(res['added'])} track(s) to {p['name']}",
                                            {"playlist": p["id"], "ids": res["added"]})
+            self._playlists_changed()
         return {"playlist": p["name"], **res, "change_id": cid}
 
     def remove_from_playlist(self, playlist: str, track_ids: list[str]) -> dict:
@@ -347,6 +358,7 @@ class Service:
             cid = self.store.record_change("playlist_remove",
                                            f"removed {len(res['removed'])} track(s) from {p['name']}",
                                            {"playlist": p["id"], "ids": res["removed"]})
+            self._playlists_changed()
         return {"playlist": p["name"], **res, "change_id": cid,
                 "note": "removed from the playlist only; the songs stay in the library"}
 
@@ -355,6 +367,7 @@ class Service:
         res = self.bridge.call("renamePlaylist", id=p["id"], name=new_name.strip())
         cid = self.store.record_change("playlist_rename", f"renamed {res['before']} to {res['after']}",
                                        {"playlist": p["id"], "before": res["before"]})
+        self._playlists_changed()
         return {**res, "change_id": cid}
 
     # ------------------------------------------------------------ delete
@@ -412,6 +425,7 @@ class Service:
             cid = self.store.record_change("delete", f"deleted {len(done)} track(s)", {"items": [
                 {"name": r.get("name"), "artist": r.get("artist"), "originalPath": r.get("location"),
                  "binPath": r.get("binPath")} for r in done if r.get("location")]})
+            self._playlists_changed()  # deleted songs leave their playlists
         kept = [r for r in res if r.get("removedFromLibrary") is False]
         out = {"deleted": len(done), "files_binned": sum(1 for r in res if r.get("fileBinned")),
                "change_id": cid, "results": res}
@@ -497,4 +511,6 @@ class Service:
         else:
             raise UserError(f"{kind} changes can't be undone")
         self.store.x("UPDATE changes SET undone=1 WHERE id=?", (change_id,))
+        if kind.startswith("playlist_"):
+            self._playlists_changed()
         return {"undone": row["summary"], **out}
